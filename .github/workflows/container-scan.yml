@@ -28,9 +28,11 @@ jobs:
 
       - name: Determine image ref
         id: image
+        env:
+          INPUT_IMAGE: ${{ github.event.inputs.image }}
         run: |
-          if [ -n "${{ github.event.inputs.image }}" ]; then
-            echo "ref=${{ github.event.inputs.image }}" >> $GITHUB_OUTPUT
+          if [ -n "$INPUT_IMAGE" ]; then
+            echo "ref=$INPUT_IMAGE" >> $GITHUB_OUTPUT
             echo "build=false" >> $GITHUB_OUTPUT
           else
             echo "ref=local-build:latest" >> $GITHUB_OUTPUT
