@@ -1,0 +1,185 @@
+name: 🟨 JavaScript / Node.js Security Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - '**/package.json'       # Triggers on any package.json change
+      - '**/package-lock.json'
+      - '**/yarn.lock'
+      - '**.js'
+      - '**.ts'
+      - '**.jsx'
+      - '**.tsx'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '**/yarn.lock'
+      - '**.js'
+      - '**.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. npm audit — Known CVEs in Node.js dependencies
+  # ─────────────────────────────────────────────────────────────
+  npm-audit:
+    name: 📦 npm Audit — Dependency CVEs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for package.json
+        id: check_node
+        run: |
+          if find . -name "package.json" -not -path "*node_modules*" -not -path "./.git/*" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Found package.json"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No package.json found"
+          fi
+
+      - name: Set up Node.js
+        if: steps.check_node.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: steps.check_node.outputs.exists == 'true'
+        run: |
+          # Find and install in each package.json directory
+          find . -name "package.json" -not -path "*node_modules*" -not -path "./.git/*" | while read f; do
+            dir=$(dirname "$f")
+            echo "Installing in $dir"
+            cd "$dir" && npm install --prefer-offline --no-audit 2>/dev/null || true && cd -
+          done
+
+      - name: Run npm audit
+        if: steps.check_node.outputs.exists == 'true'
+        run: |
+          find . -name "package.json" -not -path "*node_modules*" -not -path "./.git/*" | while read f; do
+            dir=$(dirname "$f")
+            echo "### Auditing $dir"
+            cd "$dir"
+            npm audit --json > npm-audit-report.json 2>/dev/null || true
+            cd -
+          done
+          # Final audit at root if package.json exists there
+          if [ -f "package.json" ]; then
+            npm audit --json > npm-audit-report.json 2>/dev/null || true
+          fi
+
+      - name: Display npm audit summary
+        if: steps.check_node.outputs.exists == 'true'
+        run: |
+          echo "## 🟨 npm Audit Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f npm-audit-report.json ]; then
+            python3 - <<'EOF'
+          import json, sys, os
+          with open("npm-audit-report.json") as f:
+              data = json.load(f)
+          meta = data.get("metadata", {})
+          vulns = meta.get("vulnerabilities", {})
+          total = sum(vulns.values()) if vulns else 0
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("| Severity | Count |\n|----------|-------|\n")
+              s.write(f"| 🔴 Critical | {vulns.get('critical', 0)} |\n")
+              s.write(f"| 🟠 High | {vulns.get('high', 0)} |\n")
+              s.write(f"| 🟡 Moderate | {vulns.get('moderate', 0)} |\n")
+              s.write(f"| 🟢 Low | {vulns.get('low', 0)} |\n")
+              s.write(f"| **Total** | **{total}** |\n")
+          EOF
+          fi
+
+      - name: Upload npm audit artifact
+        if: steps.check_node.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
+          if-no-files-found: warn
+
+      - name: Fail on critical/high vulnerabilities
+        if: steps.check_node.outputs.exists == 'true'
+        run: |
+          if [ -f npm-audit-report.json ]; then
+            critical=$(python3 -c "import json; d=json.load(open('npm-audit-report.json')); v=d.get('metadata',{}).get('vulnerabilities',{}); print(v.get('critical',0)+v.get('high',0))")
+            echo "Critical + High vulnerabilities: $critical"
+            if [ "$critical" -gt 0 ]; then
+              echo "❌ Found $critical critical/high npm vulnerabilities."
+              exit 1
+            else
+              echo "✅ No critical/high npm vulnerabilities found."
+            fi
+          fi
+
+      - name: No package.json found
+        if: steps.check_node.outputs.exists == 'false'
+        run: echo "ℹ️ No package.json found — skipping npm audit."
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Semgrep JS/TS — Static analysis on .js/.ts source files
+  # ─────────────────────────────────────────────────────────────
+  semgrep-js-scan:
+    name: 🔍 Semgrep — JS/TS Static Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for JS/TS files
+        id: check_js
+        run: |
+          count=$(find . \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) \
+            -not -path "*node_modules*" -not -path "./.git/*" | wc -l)
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "Found $count JS/TS files."
+
+      - name: Run Semgrep on JS/TS
+        if: steps.check_js.outputs.count > 0
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/javascript
+            p/typescript
+            p/react
+            p/nodejs
+            p/owasp-top-ten
+            p/xss
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: No JS/TS files found
+        if: steps.check_js.outputs.count == 0
+        run: echo "ℹ️ No JavaScript/TypeScript files found — skipping Semgrep JS scan."
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Summary
+  # ─────────────────────────────────────────────────────────────
+  js-scan-summary:
+    name: 📊 JS Scan Summary
+    runs-on: ubuntu-latest
+    needs: [npm-audit, semgrep-js-scan]
+    if: always()
+    steps:
+      - name: Write summary
+        run: |
+          echo "## 🟨 JavaScript Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 npm Audit (CVEs) | ${{ needs.npm-audit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Semgrep JS/TS SAST | ${{ needs.semgrep-js-scan.result }} |" >> $GITHUB_STEP_SUMMARY

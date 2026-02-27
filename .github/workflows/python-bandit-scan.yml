@@ -1,0 +1,113 @@
+name: 🐍 Python Security Scan (Bandit)
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - '**.py'           # Only triggers when Python files change
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '**.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  bandit-scan:
+    name: 🐍 Bandit — Python SAST
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for Python files
+        id: check_py
+        run: |
+          count=$(find . -name "*.py" -not -path "./.git/*" | wc -l)
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "Found $count Python files."
+
+      - name: Set up Python
+        if: steps.check_py.outputs.count > 0
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Bandit
+        if: steps.check_py.outputs.count > 0
+        run: pip install bandit[toml]==1.7.7
+
+      - name: Run Bandit scan
+        if: steps.check_py.outputs.count > 0
+        run: |
+          bandit -r . \
+            --exclude ./.git,./venv,./.venv,./tests \
+            --format json \
+            --output bandit-report.json \
+            --severity-level medium \
+            --confidence-level medium \
+            -ll || true   # Don't fail the step — upload results first
+
+      - name: Display Bandit summary
+        if: steps.check_py.outputs.count > 0
+        run: |
+          echo "## 🐍 Bandit Python Security Scan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f bandit-report.json ]; then
+            total=$(python3 -c "import json,sys; d=json.load(open('bandit-report.json')); print(len(d.get('results',[])))")
+            high=$(python3 -c "import json,sys; d=json.load(open('bandit-report.json')); print(sum(1 for r in d.get('results',[]) if r['issue_severity']=='HIGH'))")
+            med=$(python3 -c "import json,sys; d=json.load(open('bandit-report.json')); print(sum(1 for r in d.get('results',[]) if r['issue_severity']=='MEDIUM'))")
+            low=$(python3 -c "import json,sys; d=json.load(open('bandit-report.json')); print(sum(1 for r in d.get('results',[]) if r['issue_severity']=='LOW'))")
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 HIGH  | $high |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 MEDIUM | $med |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 LOW   | $low |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Total** | **$total** |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Convert Bandit JSON to SARIF
+        if: steps.check_py.outputs.count > 0
+        run: |
+          pip install bandit-sarif-formatter==1.1.1
+          bandit -r . \
+            --exclude ./.git,./venv,./.venv,./tests \
+            --format sarif \
+            --output bandit-results.sarif \
+            --severity-level medium \
+            -ll || true
+
+      - name: Upload Bandit SARIF to GitHub Security
+        if: steps.check_py.outputs.count > 0
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit-python
+
+      - name: Upload Bandit JSON artifact
+        if: steps.check_py.outputs.count > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Fail on HIGH severity findings
+        if: steps.check_py.outputs.count > 0
+        run: |
+          high=$(python3 -c "import json; d=json.load(open('bandit-report.json')); print(sum(1 for r in d.get('results',[]) if r['issue_severity']=='HIGH'))")
+          echo "HIGH severity issues: $high"
+          if [ "$high" -gt 0 ]; then
+            echo "❌ Found $high HIGH severity Python security issues. Review bandit-report.json artifact."
+            exit 1
+          else
+            echo "✅ No HIGH severity Python issues found."
+          fi
+
+      - name: No Python files found
+        if: steps.check_py.outputs.count == 0
+        run: echo "ℹ️ No Python files found — skipping Bandit scan."
