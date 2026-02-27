@@ -1,0 +1,49 @@
+title = "Gitleaks Configuration"
+
+[extend]
+# Extend from the default gitleaks rules
+useDefault = true
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  "node_modules",
+  ".git",
+  "vendor",
+  "dist",
+  "build",
+  "*.lock",
+  "package-lock.json",
+]
+
+# Allow test files with fake credentials
+files = [
+  ".*_test\\.go$",
+  ".*\\.test\\.js$",
+  ".*\\.spec\\.ts$",
+  ".*test_data.*",
+  ".*fixtures.*",
+  ".*mock.*",
+]
+
+# Regex patterns to allowlist (e.g., example keys in docs)
+regexes = [
+  "EXAMPLE",
+  "example",
+  "test",
+  "dummy",
+  "fake",
+  "placeholder",
+  "YOUR_",
+  "your_",
+  "\\$\\{",    # template variables like ${API_KEY}
+  "\\{\\{",    # template variables like {{API_KEY}}
+]
+
+# ── Custom rules ──────────────────────────────────────────────
+[[rules]]
+id = "custom-internal-token"
+description = "Internal API Token Pattern"
+regex = '''INT-[A-Z0-9]{32}'''
+tags = ["internal", "api-token"]
+severity = "ERROR"

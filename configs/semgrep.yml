@@ -1,0 +1,47 @@
+# Semgrep configuration for DevSecOps pipeline
+# Place this file at the root of your repo as .semgrep.yml
+
+rules:
+  # ── Dangerous functions ──────────────────────────────────────
+  - id: dangerous-eval
+    patterns:
+      - pattern: eval(...)
+    message: "Avoid eval() — potential code injection risk"
+    severity: ERROR
+    languages: [python, javascript, typescript]
+
+  - id: hardcoded-secret-pattern
+    patterns:
+      - pattern: |
+          $KEY = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (password|secret|token|api_key|apikey|passwd|pwd)
+    message: "Potential hardcoded secret in variable: $KEY"
+    severity: WARNING
+    languages: [python, javascript, typescript, go]
+
+  - id: sql-injection-risk
+    patterns:
+      - pattern: |
+          cursor.execute($QUERY % ...)
+      - pattern: |
+          cursor.execute($QUERY.format(...))
+    message: "Potential SQL injection — use parameterized queries"
+    severity: ERROR
+    languages: [python]
+
+  - id: insecure-random
+    patterns:
+      - pattern: random.random()
+      - pattern: random.randint(...)
+    message: "Use secrets.SystemRandom() for security-sensitive randomness"
+    severity: WARNING
+    languages: [python]
+
+  - id: debug-true-django
+    patterns:
+      - pattern: DEBUG = True
+    message: "DEBUG=True must not be set in production"
+    severity: ERROR
+    languages: [python]

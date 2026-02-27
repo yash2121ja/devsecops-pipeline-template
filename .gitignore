@@ -1,0 +1,23 @@
+# Scan outputs
+*.sarif
+trivy.json
+trivy-results.json
+semgrep-results.json
+gitleaks-report.json
+scan-results/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+
+# Node (if added)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,190 @@
+name: 🔐 DevSecOps Full Pipeline
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. SECRET SCANNING — Gitleaks
+  # ─────────────────────────────────────────────────────────────
+  secret-scan:
+    name: 🔑 Secret Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. SAST — Semgrep Static Analysis
+  # ─────────────────────────────────────────────────────────────
+  sast-semgrep:
+    name: 🔍 SAST — Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/python
+            p/javascript
+            p/typescript
+            p/secrets
+            p/docker
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. SCA — Dependency Vulnerability Scan (Trivy)
+  # ─────────────────────────────────────────────────────────────
+  sca-trivy-deps:
+    name: 📦 SCA — Dependency Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy (filesystem / dependencies)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-deps.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 0
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-deps
+
+      - name: Save JSON report artifact
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-deps.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 0
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-deps-report
+          path: trivy-deps.json
+
+  # ─────────────────────────────────────────────────────────────
+  # 4. CONTAINER SCAN — Trivy Image Scan
+  # ─────────────────────────────────────────────────────────────
+  container-scan:
+    name: 🐳 Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    # Only runs if a Dockerfile exists
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for Dockerfile
+        id: check_docker
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        if: steps.check_docker.outputs.exists == 'true'
+        run: docker build -t scan-target:latest .
+
+      - name: Run Trivy image scan
+        if: steps.check_docker.outputs.exists == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: scan-target:latest
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 0
+
+      - name: Upload image scan SARIF
+        if: steps.check_docker.outputs.exists == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: No Dockerfile found
+        if: steps.check_docker.outputs.exists == 'false'
+        run: echo "ℹ️ No Dockerfile found — skipping container scan."
+
+  # ─────────────────────────────────────────────────────────────
+  # 5. IaC SCAN — Terraform / CloudFormation / K8s (Trivy)
+  # ─────────────────────────────────────────────────────────────
+  iac-scan:
+    name: ☁️ IaC Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy IaC scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 0
+
+      - name: Upload IaC SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+
+  # ─────────────────────────────────────────────────────────────
+  # 6. SUMMARY — Pipeline Security Report
+  # ─────────────────────────────────────────────────────────────
+  security-summary:
+    name: 📊 Security Summary
+    runs-on: ubuntu-latest
+    needs: [secret-scan, sast-semgrep, sca-trivy-deps, container-scan, iac-scan]
+    if: always()
+    steps:
+      - name: Pipeline Summary
+        run: |
+          echo "## 🔐 DevSecOps Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔑 Secret Detection | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 SAST (Semgrep) | ${{ needs.sast-semgrep.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 SCA Dependencies | ${{ needs.sca-trivy-deps.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Container Scan | ${{ needs.container-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ☁️ IaC Scan | ${{ needs.iac-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Results visible in **Security → Code Scanning Alerts**" >> $GITHUB_STEP_SUMMARY
