@@ -167,24 +167,107 @@ jobs:
           category: trivy-iac
 
   # ─────────────────────────────────────────────────────────────
-  # 6. SUMMARY — Pipeline Security Report
+  # 6. PYTHON SAST — Bandit (.py files)
+  # ─────────────────────────────────────────────────────────────
+  bandit-python:
+    name: 🐍 Bandit — Python SAST
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for Python files
+        id: check_py
+        run: |
+          count=$(find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*" | wc -l)
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+      - name: Set up Python & install Bandit
+        if: steps.check_py.outputs.count > 0
+        run: pip install bandit[toml]==1.7.7 bandit-sarif-formatter==1.1.1
+
+      - name: Run Bandit (SARIF)
+        if: steps.check_py.outputs.count > 0
+        run: |
+          bandit -r . --exclude ./.git,./venv,./.venv,./tests \
+            --format sarif --output bandit-results.sarif \
+            --severity-level medium -ll || true
+
+      - name: Upload Bandit SARIF
+        if: steps.check_py.outputs.count > 0
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit-python
+
+      - name: No Python files
+        if: steps.check_py.outputs.count == 0
+        run: echo "ℹ️ No Python files found — skipping Bandit."
+
+  # ─────────────────────────────────────────────────────────────
+  # 7. JAVASCRIPT AUDIT — npm audit (package.json files)
+  # ─────────────────────────────────────────────────────────────
+  npm-audit:
+    name: 🟨 npm Audit — JS Dependency CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for package.json
+        id: check_node
+        run: |
+          if find . -name "package.json" -not -path "*node_modules*" -not -path "./.git/*" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js & run npm audit
+        if: steps.check_node.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run npm audit
+        if: steps.check_node.outputs.exists == 'true'
+        run: |
+          npm install --prefer-offline --no-audit 2>/dev/null || true
+          npm audit --json > npm-audit-report.json 2>/dev/null || true
+
+      - name: Upload npm audit artifact
+        if: steps.check_node.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
+          if-no-files-found: warn
+
+      - name: No package.json found
+        if: steps.check_node.outputs.exists == 'false'
+        run: echo "ℹ️ No package.json found — skipping npm audit."
+
+  # ─────────────────────────────────────────────────────────────
+  # 8. SUMMARY — Pipeline Security Report
   # ─────────────────────────────────────────────────────────────
   security-summary:
     name: 📊 Security Summary
     runs-on: ubuntu-latest
-    needs: [secret-scan, sast-semgrep, sca-trivy-deps, container-scan, iac-scan]
+    needs: [secret-scan, sast-semgrep, sca-trivy-deps, container-scan, iac-scan, bandit-python, npm-audit]
     if: always()
     steps:
       - name: Pipeline Summary
         run: |
           echo "## 🔐 DevSecOps Pipeline Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔑 Secret Detection | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔍 SAST (Semgrep) | ${{ needs.sast-semgrep.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 SCA Dependencies | ${{ needs.sca-trivy-deps.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🐳 Container Scan | ${{ needs.container-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ☁️ IaC Scan | ${{ needs.iac-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Tool | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔑 Secret Detection | Gitleaks | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 SAST | Semgrep (all langs) | ${{ needs.sast-semgrep.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 SCA Dependencies | Trivy fs | ${{ needs.sca-trivy-deps.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Container Scan | Trivy image | ${{ needs.container-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ☁️ IaC Scan | Trivy config | ${{ needs.iac-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐍 Python SAST | Bandit | ${{ needs.bandit-python.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟨 JS Dependency CVEs | npm audit | ${{ needs.npm-audit.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> Results visible in **Security → Code Scanning Alerts**" >> $GITHUB_STEP_SUMMARY
