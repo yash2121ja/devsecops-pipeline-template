@@ -1,0 +1,66 @@
+name: 🐳 Container Security Scan
+
+on:
+  push:
+    paths:
+      - "Dockerfile"
+      - "docker-compose*.yml"
+      - ".github/workflows/container-scan.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Docker image to scan (leave blank to build from Dockerfile)"
+        required: false
+
+jobs:
+  container-scan:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine image ref
+        id: image
+        run: |
+          if [ -n "${{ github.event.inputs.image }}" ]; then
+            echo "ref=${{ github.event.inputs.image }}" >> $GITHUB_OUTPUT
+            echo "build=false" >> $GITHUB_OUTPUT
+          else
+            echo "ref=local-build:latest" >> $GITHUB_OUTPUT
+            echo "build=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        if: steps.image.outputs.build == 'true'
+        run: docker build -t local-build:latest .
+
+      - name: Run Trivy — CRITICAL & HIGH
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 1        # Fail on CRITICAL/HIGH
+
+      - name: Run Trivy — Full SARIF report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: sarif
+          output: trivy-container.sarif
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: 0
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-container.sarif

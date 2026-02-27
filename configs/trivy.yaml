@@ -1,0 +1,53 @@
+# Trivy configuration file
+# Reference: https://aquasecurity.github.io/trivy/latest/docs/references/configuration/config-file/
+
+# Output format: table, json, sarif, cyclonedx, spdx
+format: table
+
+# Severity levels to report
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+
+# Exit code when vulnerabilities found
+exit-code: 0
+
+# Ignore unfixed vulnerabilities
+ignore-unfixed: false
+
+# Timeout for scan
+timeout: 10m
+
+# Vulnerability types to scan
+vuln-type:
+  - os
+  - library
+
+# Security checks
+scanners:
+  - vuln
+  - secret
+  - config
+  - license
+
+# Skip files/dirs
+skip-dirs:
+  - node_modules
+  - .git
+  - vendor
+  - dist
+  - build
+
+# Skip test files
+skip-files:
+  - "**/*_test.go"
+  - "**/*.test.js"
+  - "**/*.spec.ts"
+
+# License scanning settings
+license:
+  forbidden:
+    - AGPL-3.0
+    - GPL-2.0
+    - GPL-3.0
